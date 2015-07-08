@@ -190,8 +190,8 @@ void derAd(byte vel)
 }
 void derAt(byte vel)
 {
-  digitalWrite(S1_MOT_DER, 1);
-  digitalWrite(S2_MOT_DER, 0);
+  digitalWrite(S1_MOT_DER, 0);
+  digitalWrite(S2_MOT_DER, 1);
   analogWrite(VEL_MOT_DER, vel);
 }
 
