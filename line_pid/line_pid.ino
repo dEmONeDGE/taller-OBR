@@ -11,6 +11,11 @@
  * a la posicion de la linea y conduce los motores
  * con un driver l298n el cual posee 3 pines de control
  * 
+ * El algoritmo considera los casos en que el robot
+ * pierde la linea considerando la ultima medida, 
+ * tambien considera angulos cerrados, menores a 100 
+ * grados, estos casos se logran manipulando la entrada
+ * al PID en la funcion posicion()
  * Este programa es beerware, si lo utilizas
  * debes invitarme una cerveza cuando me encuentres
  * 
