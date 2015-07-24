@@ -16,44 +16,88 @@
  * 
  * Jose Laruta - julio 2015
  */
- 
+
+//librerias para el modulo rf
+#include <RF24Network.h>
+#include <RF24.h>
+#include <SPI.h>
+//---------------------------
+
+// RF
+RF24 radio(9,10);                    // nRF24L01(+) radio attached using Getting Started board 
+
+RF24Network network(radio);          // Network uses that radio
+//direcciones
+const uint16_t this_node = 01;        // Address of our node in Octal format
+const uint16_t other_node = 00;       // Address of the other node in Octal format
+//-----------------------------
+
+//estructura para los datos a mandar
+struct datos_PID{
+  int input;
+  int error;
+  int output;
+};
+
+struct datos_t{
+  int vel_izq;
+  int vel_der;
+};
+//datos_PID datos;
+
 // pines para los motores
 const int VEL_MOT_IZQ = 5;
-const int S1_MOT_IZQ = 2;
-const int S2_MOT_IZQ = 4;
+const int S1_MOT_IZQ = 4;
+const int S2_MOT_IZQ = 2;
 const int VEL_MOT_DER = 6;
 const int S1_MOT_DER = 7;
 const int S2_MOT_DER = 8;
 
 // parametros para el PID
 
-const int kp = 2;
-const int ki = 5;
-const int kd = 1;
-const int velBase = 100;
+const float kp = 1.5;
+const float ki = 0.001;
+const float kd = 0.8;
+int velBase = 70;
 
+//--variables
+float error = 0;
+float errSum, dErr, lastErr, salida;
+float lastInput, dInput;
+float ITerm= 0;
+//------------------
 //temporizacion
 long tiempoAnterior = 0;
 long tiempoActual;
-long ts = 100;        //tiempo de muestreo
+long ts = 30;        //tiempo de muestreo
 
 int Sensores[5];
+int pines[5] = {0, 1, 2, 3, 6};
 
-double Setpoint, Input, Output;
+bool sensores_bin[5];
+//variables de interaccion del PID
+double Setpoint, Input, Input_ant, Output;
 
+float velMax = 25500.0;
 void setup() {
   // inicializar las variables
-  Setpoint = 10;
-  Serial.begin(9600);
-  pinMode(13, OUTPUT);
-  for(int i = 5; i => 0; i--)
+  // el setpoint se inicializa en 2000 que corresponde al valor del sensor del
+  // centro
+  Setpoint = 2000;  
+  Serial.begin(57600);
+  for(int i = 3; i >= 0; i--)
   {
-    digitalWrite(13, 1);
-    delay(500);
-    digitalWrite(13, 0);
+    //digitalWrite(13, 1);
+    delay(1000);
+    //digitalWrite(13, 0);
+    //delay(500);
     Serial.println(i);
   }
-  
+  //inicia el rf (SPI)
+  SPI.begin();
+  radio.begin();
+  network.begin(/*channel*/ 90, /*node address*/ this_node);
+  //-----------------------
 }
 
 void loop() {
@@ -64,18 +108,38 @@ void loop() {
    * de tiempos sea mayor a ts, esto nos garantiza
    * un tiempo de muestreo constante
    */
+  network.update();                          // Check the network regularly
+
   tiempoActual = millis();
   if(tiempoActual - tiempoAnterior > ts)
   {
     // actualizamos el tiempo
     tiempoAnterior = tiempoActual;
     // calculamos la posicion de la linea
-    Input = Posicion();
+    Input = Posicion(Input_ant);
+    Serial.print("input:");
+    Serial.print(Input);
+    
     // calculamos el PID
-    Output = calcularPID(Setpoint, Input, kp, ki, kd);
+    Output = calcularPID(Setpoint, Input, kp, ki, kd)/ 100;
+    Serial.print(" output: ");
+    Serial.println(Output);
     // actuamos los motores
     Motores(Output);
+
+    datos_t datos = {error, Output};
+          
+    //envio por el rf
+    RF24NetworkHeader header(/*to node*/ other_node);
+    //datos_PID datos = {Input, error, Output};
+    bool ok = network.write(header,&datos,sizeof(datos));
+    if (ok)
+      Serial.println("ok.");
+    else
+      Serial.println("failed.");
     
+    Input_ant = Input;
+    //
   }
 
 }
@@ -84,45 +148,100 @@ void Motores(int output)
 {
   motIzq(velBase + output);
   motDer(velBase - output);
+  //Serial.print(velBase + output);
+  //Serial.print("-");
+  //Serial.println(velBase - output);
 }
 
-int Posicion(void)
+int Posicion(double anterior)
 {
-  int salida, valor;
+  int posicion, valor;
+  int linea;
   long sum = 0;
   long avg = 0;
   // lectura de los datos
-  for(int i = 0; i <= 5; i++)
+  for(int i = 0; i < 5; i++)
   {
-    Sensores[i] = analogRead(i);
+    Sensores[i] = analogRead(pines[i]);
+    //Serial.print(Sensores[i]);
+    //Serial.print(" ");
+    if(Sensores[i] < 400) sensores_bin[i] = false;
+    else sensores_bin[i] = true;
     delay(1);
   }
+  Serial.println(" ");
   //calculo de la posicion de la linea
-  for(int i = 0; i <= 5; i++)
+  for(int i = 0; i < 5; i++)
   {
     valor = Sensores[i];
-    if(valor > 30)  //eliminar ruido
+    if(valor > 50)  //eliminar ruido
     {
       sum += valor;
       avg += (long)(valor) * (i*1000);
     }
   }
-  salida = (int)(avg / sum);
-  return salida; 
+  posicion = (int)(avg / sum);
+  
+  if(posicion == -1)
+  {
+    if(anterior >= 2500) posicion = 5000;
+    if(anterior <= 500) posicion = -1000;
+  } 
+  else 
+  {
+    if(sensores_bin[0] && sensores_bin[1] && sensores_bin[2]) // angulo de 90 o menor
+      posicion = -1000;
+    else 
+    {
+      if(sensores_bin[0] && sensores_bin[1] && sensores_bin[2]) // angulo de 90 o menor
+      posicion = 5000;
+    }
+  }      
+  //Serial.println(salida);
+  return posicion; 
 }
 
-int calcularPID(int setpoint, int input, int kp, int ki, int kd)
+int calcularPID(int setpoint, int input, float kp, float ki, float kd)
 {
-  float error, errSum, dErr, lastErr, salida;
+  /*
+   * Funcion para calcular la salida.
+   * segun ley de control PID
+   * esta funcion implementa un algoritmo PID
+   * modificado para calcular la salida del robot,
+   * se implementa un PID paralelo con rechazo a 
+   * la patada derivativa y anti-windup del integrador
+   * 
+   */
   error = setpoint - input;
-  errSum += error;  //integral
-  dErr = (error - lastErr); //derivativa
-
+  //control proporcional para la velocidad base
+  Serial.print("error: ");
+  Serial.println(error);
+  if(error < 100) velBase = 75;
+  if(error <= 9) velBase = 80;
+  else velBase = 65  ;
+  ITerm += (ki * error);
+  //Serial.print("Iterm: ");
+  //Serial.println(ITerm);
+  if(ITerm > velMax) ITerm = velMax;
+  else if(ITerm < -velMax) ITerm = -velMax;
+  
+  //errSum += error;  //integral
+  
+  //dErr = (error - lastErr); //derivativa
+  dInput = (Input - lastInput); // patada derivativa
+  //Serial.print("dInput");
+  //Serial.println(dInput);
   //calcular la salida del controlador PID
-  salida = kp * error + ki * errSum + kd * dErr;
+  salida = kp * error + ITerm + kd * dInput;
+  //if(salida > velMax) salida = velMax;
+  //else if(salida < -velMax) salida = -velMax;
 
   //recordar valores anteriores
-  lastErr = error;
+  //lastErr = error;
+  lastInput = Input;
+
+  //actualizar valores para enviar
+  
   return (int)(salida);
 }
 
@@ -190,8 +309,8 @@ void derAd(byte vel)
 }
 void derAt(byte vel)
 {
-  digitalWrite(S1_MOT_DER, 0);
-  digitalWrite(S2_MOT_DER, 1);
+  digitalWrite(S1_MOT_DER, 1);
+  digitalWrite(S2_MOT_DER, 0);
   analogWrite(VEL_MOT_DER, vel);
 }
 
